@@ -26,6 +26,18 @@ $ sudo apt update
 $ sudo apt install python3 wine64 libncurses5 gcc
 ```
 
+## Download Project Files
+
+You can download our project using the following command:
+```
+$ git clone https://github.com/SoftSec-KAIST/AsFuzzer.git
+```
+
+If you encounter `git-lfs: command not found error`, please install [Git Large
+File Storage](https://git-lfs.com), a git command line extension for handling
+large files. This is necessary because one of the assemblers (Clang) exceeds
+100 MB in size.
+
 ## Run the Inferrer Module
 
 AsFuzzer requires the grammar rules of given assemblers. So you should run the
