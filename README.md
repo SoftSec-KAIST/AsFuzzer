@@ -33,10 +33,24 @@ You can download our project using the following command:
 $ git clone https://github.com/SoftSec-KAIST/AsFuzzer.git
 ```
 
-If you encounter `git-lfs: command not found error`, please install [Git Large
-File Storage](https://git-lfs.com), a git command line extension for handling
-large files. This is necessary because one of the assemblers (Clang) exceeds
-100 MB in size.
+One of the assemblers (Clang) exceeds 100 MB and is stored via [Git Large File
+Storage](https://git-lfs.com). **You must install Git LFS *before* cloning.**
+Otherwise `git clone` succeeds without any error, but `bin/clang` is checked out
+as a small (~130-byte) LFS pointer file instead of the real binary, and AsFuzzer
+will misbehave (e.g., the inferrer hangs or produces empty results).
+
+```
+$ sudo apt install git-lfs
+$ git lfs install
+$ git clone https://github.com/SoftSec-KAIST/AsFuzzer.git
+```
+
+If you already cloned without Git LFS, install it and run `git lfs pull` inside
+the repository. To verify the binary was fetched correctly:
+
+```
+$ file bin/clang        # should report an ELF executable, not "ASCII text"
+```
 
 ## Run the Inferrer Module
 
