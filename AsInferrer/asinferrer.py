@@ -109,14 +109,15 @@ class AsInferrer:
                     f.write(self.get_tail() + '\n')
 
             if self.assembler in ['gas']:
-                os.system('%s %s 2> %s'%(self.gas_cmd, asm_file, log_file))
+                os.system('%s %s -o /dev/null 2> %s'%(self.gas_cmd, asm_file, log_file))
             elif self.assembler in ['icc']:
-                os.system('%s %s 2> %s'%(self.icc_cmd, asm_file, log_file))
+                os.system('%s %s -o /dev/null 2> %s'%(self.icc_cmd, asm_file, log_file))
             elif self.assembler in ['masm']:
-                self.print_log('%s %s > %s 2>&1'%(self.masm_cmd, asm_file, log_file))
-                os.system('%s %s > %s 2>&1'%(self.masm_cmd, asm_file, log_file))
+                obj_file = asm_file + '.obj'
+                self.print_log('%s /Fo %s %s > %s 2>&1'%(self.masm_cmd, obj_file, asm_file, log_file))
+                os.system('%s /Fo %s %s > %s 2>&1'%(self.masm_cmd, obj_file, asm_file, log_file))
             elif self.assembler in ['clang']:
-                os.system('%s %s 2> %s >&2'%(self.clang_cmd, asm_file, log_file))
+                os.system('%s %s -o /dev/null 2> %s >&2'%(self.clang_cmd, asm_file, log_file))
             else:
                 raise NotImplementedError
 
@@ -200,6 +201,12 @@ class AsInferrer:
         if self.debug:
             for line in asm_code:
                 line.print_with_log()
+
+        if self.assembler in ['masm']:
+            try:
+                os.remove(asm_file + '.obj')
+            except OSError:
+                pass
 
         return asm_code
 

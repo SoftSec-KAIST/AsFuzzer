@@ -64,3 +64,40 @@ def get_assembler_cmd(arch, target):
 
 def get_supported_archs():
     return as_cmd.keys()
+
+
+def get_assembler_bin(arch, target):
+    """Extract the assembler executable path (without args/launcher) from its command."""
+    cmd = get_assembler(arch, target)
+    if not cmd:
+        return ''
+    for tok in cmd.split():
+        if '/' in tok:          # the binary path token (e.g. bin/clang, ./bin/masm64)
+            return tok
+    return cmd.split()[0]
+
+
+def check_assembler(arch, target):
+    """Check that the assembler is a real executable, not a missing/LFS-pointer file.
+
+    Returns (path, status) where status is one of:
+    'unsupported', 'missing', 'unreadable', 'lfs_pointer', 'invalid_format', 'ok'.
+    """
+    path = get_assembler_bin(arch, target)
+    if not path:
+        return path, 'unsupported'
+    if not os.path.exists(path):
+        return path, 'missing'
+    try:
+        with open(path, 'rb') as f:
+            head = f.read(8)
+    except OSError:
+        return path, 'unreadable'
+
+    # valid: ELF binary, Windows PE (masm under wine), or a shell-script wrapper
+    if head.startswith(b'\x7fELF') or head[:2] == b'MZ' or head.startswith(b'#!'):
+        return path, 'ok'
+    # Git LFS pointer files start with: "version https://git-lfs.github.com/spec/v1"
+    if head.startswith(b'version '):
+        return path, 'lfs_pointer'
+    return path, 'invalid_format'
