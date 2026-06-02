@@ -2,6 +2,7 @@ import multiprocessing
 import glob
 import random
 import os
+import sys
 import pickle
 import argparse
 import time
@@ -21,7 +22,7 @@ class TimeOutException(Exception):
 
 def alarm_handler(signum, frame):
     global total_iter
-    print("Time is up! (Iterations: %s)"%(total_iter))
+    print("\nTime is up! (Iterations: %s)"%(total_iter))
     raise TimeOutException()
 
 class AsFuzzer2:
@@ -36,6 +37,10 @@ class AsFuzzer2:
         self.random = random
         self.start = time.time()
         self.verbose = verbose
+        self.bug_count = 0
+        self.bug_diff = 0          # Differential Testing bugs (same-grammar)
+        self.bug_consistency = 0   # Consistency Check bugs (diff-grammar)
+        self.new_bugs = []
 
         self.summary_dict = {'gas':[], 'clang':[], 'icc':[], 'masm':[]}
         self.diff_err_dict = {'gas':{}, 'clang':{}, 'icc':{}, 'masm':{}}
@@ -221,6 +226,9 @@ class AsFuzzer2:
             if dump1 != dump2:
                 if opcode not in self.same_err_dict[uname]:
                     self.same_err_dict[uname][opcode] = []
+                    self.bug_count += 1
+                    self.bug_diff += 1
+                    self.new_bugs.append('Differential Testing: %s (%s vs %s)' % (opcode, tool1, tool2))
                 for line in asm_lines:
                     self.same_err_dict[uname][opcode].append(line)
 
@@ -307,6 +315,9 @@ class AsFuzzer2:
         if report.has_bugs():
             if opcode not in self.diff_err_dict[tool1]:
                 self.diff_err_dict[tool1][opcode] = []
+                self.bug_count += 1
+                self.bug_consistency += 1
+                self.new_bugs.append('Consistency Check: %s (%s)' % (opcode, tool1))
             for line in asm_lines:
                 self.diff_err_dict[tool1][opcode].append(line)
 
@@ -453,38 +464,55 @@ class AsFuzzer2:
                 print('\t%s'%(inst))
 
 
+    def write_opdict(self, opdict, fd):
+        for opcode in sorted(opdict):
+            fd.write('%s\n' % opcode)
+            for inst in sorted(set(opdict[opcode])):
+                fd.write('\t%s\n' % inst)
+
     def report_summary(self, filename, arch):
-
+        # Consistency Check: per-assembler bugs (diff/diff/<tool>)
+        consistency = {}
         for tool in ['clang', 'gas', 'icc', 'masm']:
-            opdict = dict()
-            print('[%s]'%(tool))
-            opdict = self.retrieve_logs(f'diff/{arch}/diff/{tool}/bindiff/*.s', opdict)
-            self.print_opdict(opdict)
+            consistency[tool] = self.retrieve_logs(
+                f'diff/{arch}/diff/{tool}/bindiff/*.s', dict())
 
-
+        # Differential Testing: per-assembler-pair bugs (diff/same/<pair>)
+        differential = {}
         for tool1 in ['clang', 'gas', 'icc', 'masm']:
             for tool2 in ['clang', 'gas', 'icc', 'masm']:
-                if tool1 == tool2: continue
-                if tool1 > tool2: continue
-
-                opdict = dict()
-                print('[%s vs. %s]'%(tool1, tool2))
-
+                if tool1 == tool2 or tool1 > tool2:
+                    continue
                 uname = '_'.join(sorted([tool1, tool2]))
+                differential[uname] = self.retrieve_logs(
+                    f'diff/{arch}/same/{uname}/{tool1}/bindiff/*.s', dict())
 
-                opdict = self.retrieve_logs(f'diff/{arch}/same/{uname}/{tool1}/bindiff/*.s', opdict)
+        # --- concise summary to screen ---
+        elapsed = time.time() - self.start
+        cc_total = sum(len(d) for d in consistency.values())
+        dt_total = sum(len(d) for d in differential.values())
+        print('\n=== Summary (elapsed %.1fs, tries %d) ===' % (elapsed, total_iter))
+        print('Consistency Check (%d):' % cc_total)
+        print('  ' + '   '.join('%s: %d' % (t, len(consistency[t]))
+                                 for t in ['clang', 'gas', 'icc', 'masm']))
+        print('Differential Testing (%d):' % dt_total)
+        print('  ' + '   '.join('%s: %d' % (u, len(differential[u]))
+                                 for u in sorted(differential)))
+        print('Total bugs: %d' % (cc_total + dt_total))
+        if filename:
+            print('[+] full details written to %s' % filename)
 
-                self.print_opdict(opdict)
-
-
+        # --- full details to file only ---
         if filename:
             with open(filename, 'w') as fd:
+                fd.write('=== Consistency Check ===\n')
                 for tool in ['clang', 'gas', 'icc', 'masm']:
-                    oplist = self.summary_dict[tool]
-                    opset = set(self.summary_dict[tool])
-
-                    print('[+] %s: %d\t%d'%(tool, len(oplist), len(opset)), file=fd)
-                    print(list(opset), file=fd)
+                    fd.write('[%s] %d\n' % (tool, len(consistency[tool])))
+                    self.write_opdict(consistency[tool], fd)
+                fd.write('\n=== Differential Testing ===\n')
+                for uname in sorted(differential):
+                    fd.write('[%s] %d\n' % (uname, len(differential[uname])))
+                    self.write_opdict(differential[uname], fd)
 
 
 def run(cfg):
@@ -529,10 +557,49 @@ if __name__ == '__main__':
         try:
             fuzzer = AsFuzzer2(args.arch, args.timeout, args.N, args.random, verbose=args.verbose)
             if args.random:
+                MAX_BUG_LINES = 3
+                istty = sys.stderr.isatty()
+                last_print = 0
+                recent = []        # rolling window of the last few [BUG] lines
+                region_lines = 0   # lines drawn in the live region last time
                 while True:
                     fuzzer.rand_run(args.optimize, args.target, fixed_opcode=args.opcode)
                     total_iter += 1
+                    redraw = False
+                    if fuzzer.new_bugs:
+                        notes = ['[BUG] %s' % n for n in fuzzer.new_bugs]
+                        fuzzer.new_bugs = []
+                        recent.extend(notes)
+                        recent = recent[-MAX_BUG_LINES:]   # keep newest at the bottom
+                        redraw = True
+                        if not istty:
+                            for ln in notes:
+                                print(ln, file=sys.stderr, flush=True)
+                    now = time.time()
+                    interval = 0.2 if istty else 10
+                    if redraw or now - last_print >= interval:
+                        elapsed = now - fuzzer.start
+                        rate = total_iter / elapsed if elapsed > 0 else 0
+                        status = '[%7.1fs] tries: %d (%.1f/s) | bugs: %d (Differential: %d, Consistency: %d)' % (
+                                 elapsed, total_iter, rate, fuzzer.bug_count,
+                                 fuzzer.bug_diff, fuzzer.bug_consistency)
+                        if istty:
+                            # redraw fixed region in place: status line + up to
+                            # MAX_BUG_LINES rolling [BUG] lines below it
+                            lines = [status] + recent
+                            buf = ''
+                            if region_lines:
+                                buf += '\033[%dA' % (region_lines - 1)  # up to top
+                            buf += '\r' + '\n'.join('\033[K' + ln for ln in lines)
+                            sys.stderr.write(buf)
+                            sys.stderr.flush()
+                            region_lines = len(lines)
+                        else:
+                            # non-tty: bugs already printed above; status heartbeat only
+                            print(status, file=sys.stderr, flush=True)
+                        last_print = now
             else:
                 fuzzer.seq_run(args.opcode)
         except TimeOutException as e:
+            print(file=sys.stderr)
             fuzzer.report_summary(args.report, args.arch)
